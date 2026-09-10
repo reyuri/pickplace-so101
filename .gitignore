@@ -1,0 +1,45 @@
+# ---- 权重与训练产物（体积大，留在服务器 / HF，不进 git）----
+checkpoints/
+outputs/
+*.safetensors
+*.tar.gz
+*.pt
+*.pth
+
+# ---- 数据集（走 HuggingFace，见 README）----
+data/lerobot_*/
+data/octo_frames/
+data/octo_tfds*/
+*.parquet
+*.mp4
+*.avi
+*.mov
+
+# 例外：演示视频是要提交的
+!assets/videos/*.mp4
+
+# ---- 标注工程中间产物 ----
+annotate/
+yolo_dataset/
+yolo_runs/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv*/
+*.egg-info/
+.ipynb_checkpoints/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+~$*.docx
+
+# ---- 临时调试 ----
+_tmp_*
+_tmp*/
+*.log
+!assets/**/*.log

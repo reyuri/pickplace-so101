@@ -1,0 +1,12 @@
+# 仓库统一存 LF：.sh 要在 Linux 服务器上跑，CRLF 会导致 bash 报错
+* text=auto eol=lf
+*.sh   text eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
+
+# 二进制
+*.png  binary
+*.jpg  binary
+*.mp4  binary
+*.avi  binary
+*.safetensors binary
