@@ -21,6 +21,10 @@ import sys
 from pathlib import Path
 
 # 固定参数(单/双相机通用,不需要改)
+#
+# 注意: 下面两个 repo_id 只是占位默认值 —— train_A{1,2,3}.sh 都会显式传 --policy.repo_id /
+# --dataset.repo_id 覆盖掉它们(build_args 里同名 key 以用户参数优先)。不覆盖时它们指向一个
+# 并不存在的仓库名, 所以单独跑本脚本时记得自己传。
 BASE_ARGS = [
     "--policy.path=lerobot/smolvla_base",
     "--policy.push_to_hub=false",
