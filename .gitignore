@@ -15,7 +15,10 @@ data/octo_tfds*/
 *.avi
 *.mov
 
-# 例外：演示视频是要提交的
+# 例外：演示素材是要提交的
+# 用 GIF 而不是 mp4/avi —— GitHub 的 README 渲染器会过滤掉 <video> 标签，
+# 仓库内的视频文件无法直接内嵌播放，GIF 是唯一能「点开就播」的形式。
+!assets/videos/*.gif
 !assets/videos/*.mp4
 
 # ---- 标注工程中间产物 ----
