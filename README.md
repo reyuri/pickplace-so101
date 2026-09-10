@@ -111,7 +111,7 @@ aggregate_datasets(
 │                                        │          YOLO11n 检测目标     │
 │                                        │          并把红框烙进 side 帧  │
 │                                        ▼                              │
-│                              SmolVLA-450M (LoRA/全量微调权重)          │
+│                              SmolVLA-450M (全量微调权重)               │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -474,10 +474,16 @@ pickplace-so101/
 
 ## 环境
 
-| 组件 | 版本 |
+**本地与服务器的 lerobot 不是同一个版本**，两个补丁也打在不同的 checkout 上：
+
+| 侧 | lerobot | 用途 | 打的补丁 |
+|---|---|---|---|
+| 本地（Windows） | **0.4.4**（源码 checkout，editable 安装） | 数据采集、真机闭环驱动 | `cameras/utils.py`：`CAP_MSMF` → `CAP_DSHOW`（Windows 相机后端） |
+| 云端（AutoDL） | **0.6.2**（conda env `smolvla`） | 训练、推理服务 | `datasets/factory.py`：eval 切分改为均匀抽样（`train/smolvla/patch_factory_eval.py`） |
+
+| 其他组件 | 说明 |
 |---|---|
-| lerobot | 0.4.4（源码 checkout，含本项目对 eval 切分与相机后端的补丁） |
-| SmolVLA 基座 | `lerobot/smolvla_base`（450M，SmolVLM2-500M 骨干） |
+| SmolVLA 基座 | `lerobot/smolvla_base`（450M，SmolVLM2-500M 骨干）；A1/A2/A3 为**全量微调**，非 LoRA |
 | Octo | 官方 checkpoint + 自定义 LoRA fork（Q/V 适配器 + 可加载的 base kernel 路径） |
 | YOLO | ultralytics YOLO11n |
 | 推理硬件 | AutoDL RTX 4090（同时常驻 3 个 SmolVLA + 1 个 Octo + 1 个 YOLO） |
