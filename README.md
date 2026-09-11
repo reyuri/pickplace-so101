@@ -4,10 +4,7 @@
 
 在一个 6 自由度 SO-ARM101 follower 上，用双相机（侧视 + 手眼）采集桌面 3 类玩具的抓取放置示教数据，
 分别微调 **SmolVLA-450M** 与 **Octo** 两个 VLA 模型，部署为云端推理服务（RTX 4090）由本地机械臂闭环调用，
-并针对真机测试中暴露的问题做了一轮定位与优化。
-
-项目重点不在于「跑通一个 demo」，而在于 **把两个 VLA 模型放在同一套真机环境下做对照**，
-并把过程中最耗时的几个问题（跨设备色彩通道不一致、语言条件失效、目标注意力漂移）定位到根因。
+并针对真机测试中暴露的问题做定位与优化。
 
 ---
 
@@ -35,8 +32,11 @@
 | 上位机 | Windows，机械臂串口 `COM3` |
 | 训练 / 推理 | 云端 AutoDL RTX 4090，SSH 隧道回传 |
 
-**任务**：桌面上摆放一个玩具（大象 / 树 / 球），机械臂将其抓起并放入右侧的木质收纳盒，随后回到初始位姿。
-三类玩具各采集一份数据，共用同一套动作基元，差别只在目标物体的外观与位置。
+**任务**：如下视频所示，桌面上同时摆放三个玩具（大象 / 树 / 球）和收纳盒，机械臂按照指令抓起目标玩具并放入收纳盒。
+
+![机械臂抓取放置任务演示](assets/videos/task_overview.gif)
+
+*一个完整的抓取放置周期。画面为双相机拼接：上半 **SIDE**（侧视）、下半 **EYE_IN_HAND**（手眼）。*
 
 ---
 
@@ -54,9 +54,6 @@
 | 机器人类型 | `so_follower` |
 | 格式 | LeRobot **v3.0** |
 | 体积 | ≈ 413 MB |
-
-数据由 `deploy/record_so101.py` 采集，三份子数据集用 LeRobot 的 `aggregate_datasets()` 合并
-（视频走 ffmpeg concat demuxer 流复制，不重编码）。
 
 ```python
 from lerobot.datasets.aggregate import aggregate_datasets
@@ -100,12 +97,9 @@ aggregate_datasets(
 │                                        │          YOLO11n 检测目标     │
 │                                        │          并把红框烙进 side 帧  │
 │                                        ▼                              │
-│                              SmolVLA-450M (全量微调权重)               │
+│                              SmolVLA-450M (微调权重)               │
 └───────────────────────────────────────────────────────────────────────┘
 ```
-
-**关键设计：推理服务把「实际喂给模型的那张图」原样回传给本地界面显示。**
-A2/A3 在服务端做的红框注入对本地是不可见的，如果不回传，调试时只能靠猜。
 
 ---
 
@@ -122,7 +116,7 @@ python deploy/record_so101.py                # 遥操作采集 → LeRobot 数�
 #### SmolVLA
 
 ```bash
-# 在服务器上（WORK 为工作根目录，默认 /root/autodl-tmp）
+# 在服务器上
 bash train/smolvla/train_A1.sh               # 基线，侧视原图
 bash train/smolvla/train_A2.sh               # 侧视注入 YOLO 红框
 bash train/smolvla/train_A3.sh               # 红框 + 框感知指令
@@ -141,25 +135,6 @@ python smolvla_train_launcher.py \
   --dataset.eval_split=0.11 \
   --output_dir=$WORK/outputs/train_A1 --job_name=toy_all_A1
 ```
-
-`smolvla_train_launcher.py` 会**从数据集的 `meta/info.json` 自动探测相机数量**，
-生成 `policy.input_features` 并设置 `empty_cameras = 3 - K`
-（SmolVLA 的视觉塔固定 3 个槽位，双相机时补 1 个 dummy 槽）：
-
-```
-单相机(front)      -> K=1, input={front},        empty=2
-双相机(front+hand) -> K=2, input={front,hand},   empty=1   ← 本项目
-```
-
-**为什么 `eval_split=0.11`**：135 × 0.11 ≈ 15，即 **120 训练 / 15 验证**。
-数据是按玩具分块连续采集的（0-44 大象 / 45-89 树 / 90-134 球），而 lerobot 默认取
-「每组的最后 N 条」——那样验证集就全是最后一段的球。所以先跑一次
-`train/smolvla/patch_factory_eval.py` 把切分改成按步长均匀抽样，
-验证集变成 `{0, 9, 18, ..., 126}`，**恰好跨越三个玩具分段**。
-
-**为什么选 step 5000**：验证 loss 在 5000 步见底、之后回升（过拟合）。
-10000 步共约 3.8 个 epoch，5000 步 ≈ **2 epoch**，因此用
-`outputs/train_A{1,2,3}/checkpoints/005000/pretrained_model`。
 
 #### Octo
 
@@ -182,10 +157,10 @@ bash deploy/tunnel_dual.sh start
 
 ```bash
 # 先干跑（不动机器人），只打印动作与耗时
-python deploy/drive_so101_dual.py --model A2 --toy tree --read-only
+python deploy/drive_so101_dual.py --model A1 --toy tree --read-only
 
 # 确认无误后真机执行
-python deploy/drive_so101_dual.py --model A2 --toy tree --move --max-cycles 5 --display
+python deploy/drive_so101_dual.py --model A1 --toy tree --move --max-cycles 20 --display
 ```
 
 | 参数 | 含义 |
@@ -196,7 +171,6 @@ python deploy/drive_so101_dual.py --model A2 --toy tree --move --max-cycles 5 --
 | `--max-cycles` / `--exec-steps` | 闭环轮数 / 每轮执行动作块的前 N 步 |
 | `--abs-clamp` | 默认开：关节目标绝对值限幅，防单步大跳 |
 | `--diverge-stop` | 检测到动作发散立即停机 |
-| `--swap-guard` | 默认开：检测双相机画面疑似对调 |
 | `--success-detect` | 依据夹爪开合与抬升高度自动判成功 |
 
 > ⚠️ 真机运动必须有人在场、急停就绪。`--read-only` 先跑通再 `--move`。
@@ -217,12 +191,9 @@ python deploy/drive_so101_dual.py --model A2 --toy tree --move --max-cycles 5 --
 用 YOLO 把目标直接标注在输入上，等于**把「看哪里」这件事从模型里摘出去**，
 让策略网络专注学「怎么动」。A3 进一步用语言显式指代红框，测试语言是否能与视觉线索绑定。
 
-红框由 `data/bake_redbox_dataset.py` 在**训练数据上离线烘焙**（而不是训练时在线注入），
-保证训练 / 推理两侧的框在颜色、线宽、标签格式上完全一致：
+![A1 与 A2/A3 的侧视输入对比](assets/a2a3_redbox_input.png)
 
-![A1 与 A2/A3 的输入对比](assets/a2a3_redbox_input.png)
-
-*上排：A1 看到的侧视原图；下排：A2/A3 看到的、烙入目标红框后的图像。*
+*同一帧画面：左为 A1 看到的侧视原图，右为 A2/A3 看到的、烙入 YOLO11n 目标框后的图。*
 
 ### 训练结果
 
@@ -241,7 +212,7 @@ python deploy/drive_so101_dual.py --model A2 --toy tree --move --max-cycles 5 --
 
 ## Octo LoRA 微调
 
-Octo 作为次要对照，用同一批数据微调。
+Octo 用同一批数据微调。
 
 ### 数据格式转换
 
@@ -276,45 +247,34 @@ python data/lerobot_to_octo_frames.py --root ... --toy ... --out ... --verify-on
 | 图像尺寸 | primary 256×256，wrist 128×128 |
 | batch / lr / steps | 8 / 1e-4 / 16000 |
 
-**为什么不用全量微调**：135 条轨迹对 204M 参数来说太小，全量微调会过拟合；
-LoRA 的低秩增量本身就是很强的正则。
-
-**为什么冻结 attention 的 base kernel 而只训 Q/V**：保留原参数路径
-（`Dense_0` / `Dense_1`）可被 Octo 的 `merge_params` 正常加载，
-避免「微调后权重合不回原模型」的问题。optimizer 用 optax 的
-`multi_transform({"train": adamw, "frozen": set_to_zero})` 保证冻结参数零更新。
-
-本项目采用的是 **step 12000** 的权重。
-
 ---
 
 ## 真机测试结果
 
 ### SmolVLA A1 / A2 / A3 成功率
 
-每个模型各跑 **15 次真机测试**（大象 / 树 / 球 每类 5 次），单次 `--max-cycles 20 --exec-steps 15`，
-成功判定由 `--success-detect` 自动给出后人工复核。A1/A2/A3 使用同一套初始摆放、下发同一条指令，
-仅侧视输入表征不同。下表是这 15 次的逐次明细。
+每个模型各跑 **15 次真机测试**（大象 / 树 / 球 每类 5 次），单次 `--max-cycles 20 --exec-steps 15`。
+下表是这 15 次的逐次明细,M,L,R分别摆放在中间，左边，右边。
 
 | 目标玩具 | 第 N 次 | A1 | A2 | A3 |
 |:--|:-:|:-:|:-:|:-:|
-| Tree | 1 | ❌ | ✅ | ✅ |
-| Tree | 2 | ✅ | ❌ | ✅ |
-| Tree | 3 | ✅ | ✅ | ✅ |
-| Tree | 4 | ✅ | ✅ | ✅ |
-| Tree | 5 | ✅ | ✅ | ✅ |
+| Tree(M) | 1 | ❌ | ✅ | ✅ |
+| Tree(M) | 2 | ✅ | ❌ | ✅ |
+| Tree(M) | 3 | ✅ | ✅ | ✅ |
+| Tree(L) | 4 | ✅ | ✅ | ✅ |
+| Tree(R) | 5 | ✅ | ✅ | ✅ |
 | **Tree 小计** | **5** | **4 / 5** | **4 / 5** | **5 / 5** |
-| Ball | 1 | ❌ | ✅ | ✅ |
-| Ball | 2 | ❌ | ❌ | ❌ |
-| Ball | 3 | ❌ | ✅ | ✅ |
-| Ball | 4 | ❌ | ✅ | ✅ |
-| Ball | 5 | ❌ | ❌ | ❌ |
+| Ball(M) | 1 | ❌ | ✅ | ✅ |
+| Ball(M) | 2 | ❌ | ❌ | ❌ |
+| Ball(M) | 3 | ❌ | ✅ | ✅ |
+| Ball(L) | 4 | ❌ | ✅ | ✅ |
+| Ball(R) | 5 | ❌ | ❌ | ❌ |
 | **Ball 小计** | **5** | **0 / 5** | **3 / 5** | **3 / 5** |
-| Elephant | 1 | ❌ | ✅ | ✅ |
-| Elephant | 2 | ✅ | ✅ | ✅ |
-| Elephant | 3 | ❌ | ❌ | ✅ |
-| Elephant | 4 | ❌ | ✅ | ✅ |
-| Elephant | 5 | ❌ | ✅ | ❌ |
+| Elephant(M) | 1 | ❌ | ✅ | ✅ |
+| Elephant(M) | 2 | ✅ | ✅ | ✅ |
+| Elephant(M) | 3 | ❌ | ❌ | ✅ |
+| Elephant(L) | 4 | ❌ | ✅ | ✅ |
+| Elephant(R) | 5 | ❌ | ✅ | ❌ |
 | **Elephant 小计** | **5** | **1 / 5** | **4 / 5** | **4 / 5** |
 
 **15 次测试的合计成功率（不分玩具）：**
@@ -326,21 +286,9 @@ LoRA 的低秩增量本身就是很强的正则。
 | **A3** | **12** | 15 | **80.0 %** |
 
 > A1 → A2 提升 **+40.0** 个百分点，来自把「目标在哪」从模型里摘出去；
-> A2 → A3 只再涨 **+6.7** 个百分点，说明额外的语言指代（"in red box"）收益有限 ——
-> 主要增益来自视觉注意力的显式注入，而不是语言。
-> 分玩具看：A1 在 ball 上 **0 / 5**（目标最小、最不显眼），A2/A3 把它拉到 3 / 5 以上。
-
-### 推理耗时
-
-| 环节 | 耗时 |
-|---|---|
-| SmolVLA 模型前向 | ≈ 300 ms |
-| YOLO11n 目标检测（仅 A2/A3） | ≈ 50 ms |
-| 网络往返（本地 ↔ 云端） | ≈ 150 ms |
-| **单轮合计** | **≈ 500 ms** |
-
-即整条闭环**约 2 Hz**。瓶颈已从模型转到网络往返 —— 若把推理服务下沉到本地，
-理论上可降到 ~350 ms。
+> A2 → A3 只再涨 **+6.7** 个百分点，说明额外的语言指代（"in red box"）带来轻微收益 ——
+> 但主要增益来自视觉注意力的显式注入。
+> 分玩具看：A1 在 ball 上 **0 / 5**（目标最小、最不好抓取），A2/A3 把它拉到 3 / 5 以上。
 
 ### 演示视频
 
@@ -367,6 +315,34 @@ A1 却抓成了正前方的 tree。**A1 过拟合了示教轨迹**，
 说明其语言条件已退化，策略实际上在按「哪个目标更显眼」选择物体。
 
 ![Octo 忽略语言指令，改抓了 ball](assets/videos/octo_elephant_ignores_lang.gif)
+
+### 推理耗时
+
+云端推理服务器为 RTX 4090 24G。两个模型都跑「云端一次规划 → 本地执行若干步」的闭环。
+
+**SmolVLA（A1 / A2 / A3）**
+
+| 环节 | 耗时 |
+|---|---|
+| 模型一次前向 | ≈ 300 ms |
+| YOLO11n 目标检测（仅 A2/A3） | ≈ 40 ms |
+| 网络往返（本地 ↔ 云端） | ≈ 140 ms |
+| **单轮规划** | **≈ 480 ms** |
+
+每轮规划输出一个动作块，本地执行其中的前 **15 步**；完成一次完整的抓取放置约需 **13 ~ 15 轮**规划，
+即整体耗时约 **6 ~ 7 s**。
+
+**Octo**
+
+| 环节 | 耗时 |
+|---|---|
+| 模型一次前向 | ≈ 130 ms |
+| 网络往返（本地 ↔ 云端） | ≈ 50 ms |
+| **单轮规划** | **≈ 180 ms** |
+
+Octo 单轮只走 **4 步**，完成同一任务需要约 **55 ~ 60 轮**规划，整体约 **10~11 s**。
+它的单轮比 SmolVLA 快约 2.7 倍，但每轮推进的步数只有前者的约 1/4 ——
+**每轮规划更便宜，代价是轮数多得多，任务整体反而更慢。**
 
 ---
 
@@ -424,7 +400,7 @@ pickplace-so101/
 
 | 其他组件 | 说明 |
 |---|---|
-| SmolVLA 基座 | `lerobot/smolvla_base`（450M，SmolVLM2-500M 骨干）；A1/A2/A3 为**全量微调**，非 LoRA |
+| SmolVLA 基座 | `lerobot/smolvla_base`（450M，SmolVLM2-500M 骨干）；A1/A2/A3 为**微调**，非 LoRA |
 | Octo | 官方 checkpoint + 自定义 LoRA fork（Q/V 适配器 + 可加载的 base kernel 路径） |
 | YOLO | ultralytics YOLO11n |
 | 推理硬件 | AutoDL RTX 4090（同时常驻 3 个 SmolVLA + 1 个 Octo + 1 个 YOLO） |
