@@ -42,7 +42,7 @@
 
 ## 数据集
 
-**[reyqiao/lerobot_reyqiao_toy](https://huggingface.co/datasets/reyqiao/lerobot_reyqiao_toy)** — HuggingFace Datasets
+**自采数据集[reyqiao/lerobot_reyqiao_toy](https://huggingface.co/datasets/reyqiao/lerobot_reyqiao_toy)** — HuggingFace Datasets
 
 | 指标 | 数值 |
 |---|---|
@@ -65,10 +65,6 @@ aggregate_datasets(
     aggr_root=OUT,
 )
 ```
-
-> 注意用 `aggregate_datasets()` 而不是 `merge_datasets()`：后者在末尾会把结果重新以
-> `LeRobotDataset` 打开一遍，那条路径依赖 `torchcodec`；前者只用 `pyav` + `ffmpeg`。
-
 ---
 
 ## 系统架构
@@ -187,8 +183,8 @@ python deploy/drive_so101_dual.py --model A1 --toy tree --move --max-cycles 20 -
 | **A2** | `..._redbox` | **YOLO11n 检出目标后烙入红框** | 同上（不变） |
 | **A3** | `..._redbox_a3` | 同 A2 | `Pick up the {toy} **in red box** and place it into the box` |
 
-动机：双相机下侧视视角目标很小，模型容易把注意力放到机械臂自身运动上。
-用 YOLO 把目标直接标注在输入上，等于**把「看哪里」这件事从模型里摘出去**，
+动机：测试发现模型容易把注意力放到机械臂自身运动上，而越过语言指令指定的抓取目标。
+用 YOLO 把目标直接标注在输入上，等于**把「看哪里」这件事直接告诉模型**，
 让策略网络专注学「怎么动」。A3 进一步用语言显式指代红框，测试语言是否能与视觉线索绑定。
 
 ![A1 与 A2/A3 的侧视输入对比](assets/a2a3_redbox_input.png)
@@ -254,7 +250,7 @@ python data/lerobot_to_octo_frames.py --root ... --toy ... --out ... --verify-on
 ### SmolVLA A1 / A2 / A3 成功率
 
 每个模型各跑 **15 次真机测试**（大象 / 树 / 球 每类 5 次），单次 `--max-cycles 20 --exec-steps 15`。
-下表是这 15 次的逐次明细,M,L,R分别摆放在中间，左边，右边。
+下表是这 15 次的逐次明细。其中M,L,R代表玩具分别摆放在中间，左边，右边。
 
 | 目标玩具 | 第 N 次 | A1 | A2 | A3 |
 |:--|:-:|:-:|:-:|:-:|
@@ -285,7 +281,7 @@ python data/lerobot_to_octo_frames.py --root ... --toy ... --out ... --verify-on
 | **A2** | **11** | 15 | **73.3 %** |
 | **A3** | **12** | 15 | **80.0 %** |
 
-> A1 → A2 提升 **+40.0** 个百分点，来自把「目标在哪」从模型里摘出去；
+> A1 → A2 提升 **+40.0** 个百分点，来自把「目标在哪」直接告诉模型；
 > A2 → A3 只再涨 **+6.7** 个百分点，说明额外的语言指代（"in red box"）带来轻微收益 ——
 > 但主要增益来自视觉注意力的显式注入。
 > 分玩具看：A1 在 ball 上 **0 / 5**（目标最小、最不好抓取），A2/A3 把它拉到 3 / 5 以上。
@@ -318,7 +314,7 @@ A1 却抓成了正前方的 tree。**A1 过拟合了示教轨迹**，
 
 ### 推理耗时
 
-云端推理服务器为 RTX 4090 24G。两个模型都跑「云端一次规划 → 本地执行若干步」的闭环。
+云端推理服务器为 RTX 4090 24G。两个模型都跑「云端规划 → 本地执行」的闭环。
 
 **SmolVLA（A1 / A2 / A3）**
 
@@ -400,7 +396,7 @@ pickplace-so101/
 
 | 其他组件 | 说明 |
 |---|---|
-| SmolVLA 基座 | `lerobot/smolvla_base`（450M，SmolVLM2-500M 骨干）；A1/A2/A3 为**微调**，非 LoRA |
+| SmolVLA 基座 | `lerobot/smolvla_base`（450M）；A1/A2/A3 为**微调**，非 LoRA |
 | Octo | 官方 checkpoint + 自定义 LoRA fork（Q/V 适配器 + 可加载的 base kernel 路径） |
 | YOLO | ultralytics YOLO11n |
 | 推理硬件 | AutoDL RTX 4090（同时常驻 3 个 SmolVLA + 1 个 Octo + 1 个 YOLO） |
