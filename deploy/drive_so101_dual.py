@@ -9,7 +9,6 @@
 
 双相机(与 record_so101.py 一致):
   side=index1, eye_in_hand=index2, 均 640x480@30 MJPG。
-  注意: SOFollower 相机 color_mode=RGB, 转 BGR 存/编码; 红框坐标在整帧像素系, 显示侧即画侧。
 
 实时显示(任务重点: side 窗口 = 真实进入模型的**带红框**图):
   后台线程 LiveDisplay 用共享缓冲(control 线程每次 inference 后写入最新 side_bgr/eih_bgr + 服务端返回的 box),
@@ -56,8 +55,11 @@ DISPLAY_SCALE = 0.7  # 拼接窗缩放: 640x960 -> ~448x672(用户要求更小�
 
 # --model -> (url, 是否红框模型, 默认 task 前缀)。红框模型(A2/A3)无需本地判断, 服务端会返回 box。
 URLS = {"A1": "http://127.0.0.1:6010", "A2": "http://127.0.0.1:6011", "A3": "http://127.0.0.1:6012",
-        "OCTO": "http://127.0.0.1:6020"}
-BOXED = {"A1": False, "A2": True, "A3": True, "OCTO": False}  # A1 训练无框→侧视原图; A2/A3 训练有框→服务端注入; OCTO 无框
+        "OCTO": "http://127.0.0.1:6020","OCTO_INF": "http://127.0.0.1:6021"}
+# A1 训练无框→侧视原图; A2/A3/OCTO_RB 训练有框→服务端注入; OCTO/OCTO_INF 无框。
+# OCTO_RB = Octo 红框版(octo_lora_redbox)，与 OCTO 共用 6020，同一时刻只能起一个 serve。
+# OCTO_INF = Octo infonce 版(octo_lora_infonce_well)，独占 6021，**可与 OCTO_RB 同时在线**
+BOXED = {"A1": False, "A2": True, "A3": True, "OCTO": False, "OCTO_INF": False}
 TOYS = ("elephant", "tree", "ball")
 
 # 起位/收尾 home: 取自训练数据集 `VLA_Proj/data_v1/reyqiao/lerobot_rey_toy` 各 episode 起始 obs.state 的
@@ -70,7 +72,7 @@ SUCCESS_DETECT = False
 
 
 def task_for(model, toy):
-    if model == "A3":
+    if model in ("A3", "OCTO_RB"):
         return f"Pick up the {toy} in red box and place it into the box"
     return f"Pick up the {toy} and place it into the box"
 
@@ -78,10 +80,6 @@ def task_for(model, toy):
 # --------------------------------------------------------------------------- 相机/机器人
 def make_robot_config_dual(port, robot_id, max_rel, cam_side=1, cam_eye=0):
     """双相机配置: side, eye_in_hand。
-
-    ⚠️ 索引默认值 side=1 / eye_in_hand=0 是 2026-09-10 实测修正的(原写死 side=1/eye=2)。
-    Windows DSHOW 的设备枚举顺序**会漂移**, 与插拔顺序无关(内置摄像头拔不掉, 会永久占位)。
-    实测现状: idx0=`USB Camera`(手眼, 俯视夹爪) / idx1=`Brio 90`(侧视全景) / idx2=笔记本内置。
 
     跑真机前先 `python dual_camera_viewer.py 1 0` 目视确认这两路画面;
     若又漂了, 用 `--cam-side/--cam-eye` 覆盖即可, 不必改代码。
@@ -341,10 +339,14 @@ class LiveDisplay(threading.Thread):
 # --------------------------------------------------------------------------- 主流程
 def main() -> int:
     ap = argparse.ArgumentParser(description="SO-101 双相机闭环(云端推理 A1/A2/A3)")
-    ap.add_argument("--model", choices=list(URLS.keys()), required=True, help="A1/A2/A3")
+    ap.add_argument("--model", choices=list(URLS.keys()), required=True,
+                    help="A1/A2/A3 (SmolVLA) / OCTO (原生) / OCTO_RB (Octo 红框版) "
+                         "/ OCTO_INF (Octo infonce 版)")
     ap.add_argument("--toy", choices=TOYS, default="tree", help="目标玩具(默认任务沿用; --task 覆盖)")
     ap.add_argument("--task", default="", help="任务文本; 空则按 model+toy 自动拼")
-    ap.add_argument("--url", default="", help="云端 /infer 地址; 空则按 --model 映射(A1:6010/A2:6011/A3:6012)")
+    ap.add_argument("--url", default="", help="云端 /infer 地址; 空则按 --model 映射"
+                                              "(A1:6010/A2:6011/A3:6012, OCTO 与 OCTO_RB:6020, "
+                                              "OCTO_INF:6021)")
     ap.add_argument("--read-only", action="store_true", help="只读: 取帧+推理+显示, 绝不动臂")
     ap.add_argument("--move", action="store_true", help="真机闭环(receding horizon)")
     ap.add_argument("--display", action="store_true", default=False, help="开启实时显示(默认关, 避免无GUI环境卡顿)")
@@ -369,10 +371,14 @@ def main() -> int:
     # 模型吃到错图却没有任何告警, 整跑结论作废。此后每轮比对两路画面, 异常即落盘+中止。
     ap.add_argument("--no-swap-guard", action="store_false", dest="swap_guard",
                     help="关闭双目串台守卫(默认开)")
-    ap.add_argument("--swap-thresh", type=float, default=15.0,
-                    help="两路画面平均绝对差低于此判为串台; 实测正常 63~65(cam_watch.py), 默认15留足余量")
+    ap.add_argument("--swap-thresh", type=float, default=35.0,
+                    help="两路画面平均绝对差(取原始与R/B对调的min)低于此判为串台。"
+                         "实测: 正常 63~65; 2026-09-10 串台那轮原始 33.46 / 通道对调 15.03。"
+                         "取 35 —— 比最坏情况高 2.3x, 比健康值低 1.8x, 两边都有余量。")
     ap.add_argument("--stale-warn", type=int, default=2,
-                    help="连续这么多轮推理输入逐像素完全相同即告警(抓帧线程停滞), 默认2")
+                    help="连续这么多轮推理输入逐像素完全相同即判抓帧停滞, 默认2(会中止)")
+    ap.add_argument("--stale-continue", action="store_true",
+                    help="抓帧停滞时只告警不中止(旧行为; 停滞期的轮次结果不可信, 仅调试用)")
     # 任务完成检测(位姿+夹爪轨迹门控; 默认关, 开则命中立刻回 home)
     ap.add_argument("--success-detect", action="store_true", default=SUCCESS_DETECT,
                     help="位姿+夹爪轨迹判断任务完成, 命中立刻回 home(默认由顶部 SUCCESS_DETECT 开关决定)")
@@ -500,7 +506,14 @@ def main() -> int:
             # ---- 双目串台守卫: 异常当场落盘 + 中止, 绝不静默把错图喂给模型 ----
             if args.swap_guard and side_bgr is not None and eih_bgr is not None:
                 if side_bgr.shape == eih_bgr.shape:
-                    fdiff = float(np.mean(np.abs(side_bgr.astype(np.int16) - eih_bgr.astype(np.int16))))
+                    a = side_bgr.astype(np.int16)
+                    b = eih_bgr.astype(np.int16)
+                    d_raw = float(np.mean(np.abs(a - b)))
+                    # 通道无关(2026-09-10 事故的直接教训): 那次手眼槽位拿到的其实是**R/B 对调**过的
+                    # 侧视画面 —— 原始判据 |eye-side| = 33.46, 对调后 |eye-swap(side)| = 15.03,
+                    # **两个数都在当时 15.0 的阈值之上**, 所以两次都没报警。必须取 min 才抓得住。
+                    d_chswap = float(np.mean(np.abs(a - b[..., ::-1])))
+                    fdiff = min(d_raw, d_chswap)
                 else:
                     fdiff = -1.0  # 尺寸都不同, 必然不是同一路, 不判串台
                 # 抓帧停滞: 连续多轮"推理输入逐像素完全相同"。真实相机有传感器噪声,
@@ -521,16 +534,24 @@ def main() -> int:
 
                 if 0 <= fdiff < args.swap_thresh:
                     sp, ep = _dump_camfail("swap")
-                    print(f"[cam!] cycle {cyc} 双目串台: 两路画面平均差 {fdiff:.2f} < {args.swap_thresh} —— "
+                    print(f"[cam!] cycle {cyc} 双目串台: 两路画面平均差 {fdiff:.2f} < {args.swap_thresh}"
+                          f" (原始 {d_raw:.2f} / 通道对调 {d_chswap:.2f}) —— "
                           f"手眼相机大概率在输出侧视画面。证据已存 {sp} / {ep}。中止。")
                     aborted = cyc
                     break
                 if stale_run >= args.stale_warn:
                     sp, ep = _dump_camfail(f"stale{stale_run}")
-                    print(f"[cam!] cycle {cyc} 抓帧停滞: 连续 {stale_run + 1} 轮推理输入逐像素完全相同"
-                          f" (grab_frames={stream.frames}, 实测应当每轮都涨)。证据已存 {sp} / {ep}。"
-                          f"继续跑, 但结果不可信。")
-                    stale_run = 0
+                    if args.stale_continue:
+                        print(f"[cam!] cycle {cyc} 抓帧停滞: 连续 {stale_run + 1} 轮推理输入逐像素完全相同"
+                              f" (grab_frames={stream.frames}, 实测应当每轮都涨)。证据已存 {sp} / {ep}。"
+                              f"--stale-continue 已开, 继续跑 —— 但这几轮结果不可信。")
+                        stale_run = 0
+                    else:
+                        print(f"[cam!] cycle {cyc} 抓帧停滞: 连续 {stale_run + 1} 轮推理输入逐像素完全相同"
+                              f" (grab_frames={stream.frames}, 实测应当每轮都涨)。证据已存 {sp} / {ep}。中止"
+                              f"(想让它在停滞时继续跑就加 --stale-continue)。")
+                        aborted = cyc
+                        break
 
             if args.save_obs:  # 默认关: 每轮另存 debug 单帧(与录像冗余, 不默认写到项目根)
                 cv2.imwrite(f"{args.save_prefix}_observe_{cyc}_side.jpg", side_bgr)

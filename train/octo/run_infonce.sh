@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 语言条件修复尝试：在 LoRA 基线上加对比损失（hinge margin 版）。
-# 结论是失败的 —— 语言敏感度涨 21 倍但真机更差，见 README「问题定位与优化」第 3 节。
+# 结论是失败的 —— 语言敏感度涨上去了但真机更差，见 README「Octo 消融：Base vs infoNCE」。
 #
 # 与 run_finetune.sh 唯一的差异就是多两个参数：--infonce_w / --infonce_margin
+# 上游改动 base 的延续：本脚本产出的 checkpoint 由 serve 的那条 OCTO_INF(6021) 加载。
 set -euo pipefail
 
 WORK="${WORK:-/root/autodl-tmp}"

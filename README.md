@@ -14,8 +14,10 @@
 - [数据集](#数据集)
 - [系统架构](#系统架构)
 - [复现步骤](#复现步骤)
+- [模型权重下载](#模型权重下载)
 - [SmolVLA 消融 A1 A2 A3](#smolvla-消融-a1-a2-a3)
 - [Octo LoRA 微调](#octo-lora-微调)
+- [Octo 消融：Base vs infoNCE](#octo-消融base-vs-infonce)
 - [真机测试结果](#真机测试结果)
 - [仓库结构](#仓库结构)
 - [环境](#环境)
@@ -83,7 +85,7 @@ aggregate_datasets(
 │                    │  ④ 显示「真正进入模型的那张 side 图」│              │
 │                    └───────────────────────────────────┼──────────────│
 └────────────────────────────────────────────────────────┼─────────────┘
-                       SSH 隧道  -L 6010/6011/6012        │
+                       SSH 隧道  -L 6010~6021 (5 条)      │
 ┌──────────────────────── 云端 (AutoDL RTX 4090) ─────────┼─────────────┐
 │                                                          ▼            │
 │   drive_so101_dual.py ──→ serve_smolvla_dual.py  :6010 A1 / :6011 A2  │
@@ -96,6 +98,8 @@ aggregate_datasets(
 │                              SmolVLA-450M (微调权重)               │
 └───────────────────────────────────────────────────────────────────────┘
 ```
+
+> 端口：`6010` A1 / `6011` A2 / `6012` A3 / `6020` OCTO · OCTO_RB / `6021` OCTO_INF。
 
 ---
 
@@ -161,7 +165,7 @@ python deploy/drive_so101_dual.py --model A1 --toy tree --move --max-cycles 20 -
 
 | 参数 | 含义 |
 |---|---|
-| `--model` | `A1` / `A2` / `A3` / `OCTO`，对应上表端口 |
+| `--model` | `A1` / `A2` / `A3` / `OCTO` / `OCTO_RB` / `OCTO_INF`，对应上表端口 |
 | `--toy` | `elephant` / `tree` / `ball`，决定下发的语言指令 |
 | `--read-only` / `--move` | 只推理不动机器人 / 真机执行 |
 | `--max-cycles` / `--exec-steps` | 闭环轮数 / 每轮执行动作块的前 N 步 |
@@ -170,6 +174,22 @@ python deploy/drive_so101_dual.py --model A1 --toy tree --move --max-cycles 20 -
 | `--success-detect` | 依据夹爪开合与抬升高度自动判成功 |
 
 > ⚠️ 真机运动必须有人在场、急停就绪。`--read-only` 先跑通再 `--move`。
+
+---
+
+## 模型权重下载
+
+四个 checkpoint 都超过 GitHub 普通仓库的单文件上限（100 MB），所以**不进 git**，
+以 **Release 资产** 的形式发布：
+
+**→ [Releases · v1.0-weights](https://github.com/reyuri/pickplace-so101/releases/tag/v1.0-weights)**
+
+| 文件 | 对应模型 | 大小 | sha256 |
+|---|---|---|---|
+| `smolvla_A1_s5000.tar.gz` | SmolVLA **A1**（侧视原图）step 5000 | 720 MB | `180c696b7e85d671d9e6e55f64c5aa883a70080791c75feb8aea0bb1a8a0ed03` |
+| `smolvla_A2_s5000.tar.gz` | SmolVLA **A2**（YOLO 红框）step 5000 | 720 MB | `d1a1aecf846b3756571dd5f355decd5c39de496f3a48939594d90443b6cb5320` |
+| `smolvla_A3_s5000.tar.gz` | SmolVLA **A3**（红框 + 框感知指令）step 5000 | 720 MB | `a9a5485f1939a4ba8922db0d0318a70fdc1b4fc68e4ced10b9611c79fed9dc1c` |
+| `octo_base_12000.tar.gz` | Octo **base**（LoRA Q/V）step 12000 | 553 MB | `b1ad9b2e9e44c650b7332c99c7f43e44bdb0ac0bf0d63efa314181307f580cae` |
 
 ---
 
@@ -242,6 +262,78 @@ python data/lerobot_to_octo_frames.py --root ... --toy ... --out ... --verify-on
 | window / horizon | 2 / 4 |
 | 图像尺寸 | primary 256×256，wrist 128×128 |
 | batch / lr / steps | 8 / 1e-4 / 16000 |
+
+---
+
+## Octo 消融：Base vs infoNCE
+
+### 动机
+
+Octo 微调完在真机上会**忽略语言指令，只按画面的视觉显著性挑目标**（现象见下文「真机测试结果」的 Octo 小节）。
+为了逼它把语言用起来，在 LoRA 基线上加了一路 **infoNCE 辅助对比损失**。
+
+### 方法
+
+对比损失作用在 `readout_emb` —— DiffusionHead 的输入条件向量，也就是「图像 + 语言」融合之后那个固定长度的向量：
+
+| | 构造 |
+|---|---|
+| **正样本** | 同一帧图像 + **正确的**语言指令 |
+| **负样本** | 同一帧图像 + **错误的**语言指令（换成去抓另一个 toy） |
+
+损失直接惩罚「**语言指令换了、但 `readout_emb` 却没怎么变**」的情形，即逼 readout 对语言敏感。
+
+训练侧只加这一项：`train/octo/run_infonce.sh` 与 `run_finetune.sh` 的差异**只有** `--infonce_w` / `--infonce_margin` 两个参数。
+
+### 度量：语言在这一层有多少话语权
+
+在**输出端**量语言的相对话语权，三个量由 `train/octo/probes/diag_lang_layers.py` 给出：
+
+| 量 | 含义 |
+|---|---|
+| **ΔL**（语言驱动） | 同一帧，指令从 REF 换成别的，输出变化了多少 |
+| **ΔV**（视觉驱动） | 同一条指令，画面帧变化了，输出变化多少 |
+| **S = ΔL / ΔV** | 相对画面，语言在**这一层**有多少话语权 |
+
+- `readout S` —— 把 `readout_emb` 当输出测
+- `action S` —— 把 action 当输出测
+
+对 **6 帧 × 4 个非 REF 指令**（ball / elephant / empty / gibberish）全跑一遍取平均。
+其中 REF = `tree`，6 帧 = 3 个玩具 × 2 帧；`empty`（空指令）与 `gibberish`（无意义词）是控制项，用来排除「只要指令变了就行」这种解释。
+
+**比值 `S_readout / S_action` 是语言话语权的「穿透率」：**
+
+- **≈ 1** → 语言在两层的话语权一样大，动作头既没放大也没吞掉 —— baseline 是 **0.93**
+- **> 1** → readout 里语言话语权更大，说明**动作头把它压下去了** —— 压掉的部分就是没穿透的
+
+### 结果
+
+![Octo base 与 infoNCE 的语言穿透率对比](assets/octo_infonce_result.png)
+
+| checkpoint | readout ΔL | readout S | 动作 ΔL | 动作 S | **S_readout / S_action** |
+|---|---|---|---|---|---|
+| baseline /12000 | 0.0158 | 0.13 | 0.0499 | 0.14 | **0.93** |
+| infoNCE_well /2000 | 1.1645 | 10.08 | 0.7934 | 1.46 | **6.90** |
+| infoNCE_well /8000 | 1.1618 | 9.01 | 0.2659 | 0.80 | **11.2** |
+
+辅助损失**确实把语言写进了 readout**：`readout S` 从基线的 0.13 涨到 10.08（约 78 倍），
+`readout ΔL` 也从 0.0158 涨到 1.16。**但穿透率反而恶化了**：
+
+- infoNCE /2000 是 **6.9** —— readout 上语言话语权比动作上大 6.9 倍，
+  也就是**约 6/7 的相对语言结构没能穿过动作头**
+- 到 /8000 涨到 **11.2**，穿透率进一步恶化
+
+### 根源
+
+> Octo 将图像、语言特征 **→ 融合压缩成 一个固定长度向量 `readout_emb`**，容量有限；
+> 图像空间信息（物体位置、靠近哪边玩具）的信号强度往往**远大于**语言语义信号
+> → 动作头（语言很容易丢）。
+
+也就是说，对比损失把语言「塞进」了 readout，却没有解决动作头读取时**图像信号压过语言信号**这件事 ——
+语言在 readout 里的话语权涨了近两个数量级，真正穿透到动作上的**反而更少**。
+
+**这一路改动没有产出比 baseline 更好的 checkpoint**，它作为一次**被证伪的假设**留在这里：
+语言条件失效不是「readout 没编码语言」，而是「编码了也压不过图像」。
 
 ---
 
@@ -365,7 +457,10 @@ pickplace-so101/
 │
 ├── deploy/                        推理服务与真机驱动
 │   ├── serve_smolvla_dual.py         双相机 SmolVLA 推理服务
-│   ├── serve_octo_native.py          Octo 推理服务
+│   ├── serve_octo_native.py          Octo 推理服务（原生，无红框）
+│   ├── serve_octo_redbox.py          Octo 红框版推理服务（服务端注入 YOLO 红框）
+│   ├── start_octo_redbox.sh          起 Octo 红框版链路（YOLO:6090 + serve:6020）
+│   ├── smoke_octo_redbox.py          Octo 红框版链路自检（含框画图目视确认）
 │   ├── serve_dual.sh                 一键起 YOLO + A1/A2/A3
 │   ├── tunnel_dual.sh                本地 SSH 隧道管理
 │   ├── drive_so101_dual.py           ★ 真机闭环驱动（含多项安全护栏）
@@ -380,6 +475,7 @@ pickplace-so101/
 │   └── resample_annot_diverse.py     最远点采样选标注帧（200 train / 20 val）
 │
 ├── assets/                       图片与演示视频
+├── weights/                      模型权重缓存（不进 git；发布走 Release，见「模型权重下载」）
 └── README.md
 ```
 
