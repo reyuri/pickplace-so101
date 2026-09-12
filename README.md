@@ -14,7 +14,6 @@
 - [数据集](#数据集)
 - [系统架构](#系统架构)
 - [复现步骤](#复现步骤)
-- [模型权重下载](#模型权重下载)
 - [SmolVLA 消融 A1 A2 A3](#smolvla-消融-a1-a2-a3)
 - [Octo LoRA 微调](#octo-lora-微调)
 - [Octo 消融：Base vs infoNCE](#octo-消融base-vs-infonce)
@@ -292,8 +291,6 @@ Octo 微调完在真机上会**忽略语言指令，只按画面的视觉显著�
 
 ### 结果
 
-![Octo base 与 infoNCE 的语言穿透率对比]
-
 | checkpoint | readout ΔL | readout S | 动作 ΔL | 动作 S | **S_readout / S_action** |
 |---|---|---|---|---|---|
 | baseline /12000 | 0.0158 | 0.13 | 0.0499 | 0.14 | **0.93** |
@@ -456,7 +453,6 @@ pickplace-so101/
 │   └── resample_annot_diverse.py     最远点采样选标注帧（200 train / 20 val）
 │
 ├── assets/                       图片与演示视频
-├── weights/                      模型权重缓存（不进 git；发布走 Release，见「模型权重下载」）
 └── README.md
 ```
 

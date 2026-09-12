@@ -1,6 +1,5 @@
 # ---- 权重与训练产物（体积大，不进 git）----
-# 权重发布走 GitHub Release（单文件超 100MB，普通 git 推不上去），见 README「模型权重下载」。
-# weights/ 是本地缓存目录：下载回来的归档放这里，只做本地使用，不上传。
+# weights/ 是本地缓存目录：训练产物、下载回来的归档放这里，只做本地使用，不上传。
 checkpoints/
 outputs/
 weights/*.tar.gz
