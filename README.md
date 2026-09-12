@@ -177,22 +177,6 @@ python deploy/drive_so101_dual.py --model A1 --toy tree --move --max-cycles 20 -
 
 ---
 
-## 模型权重下载
-
-四个 checkpoint 都超过 GitHub 普通仓库的单文件上限（100 MB），所以**不进 git**，
-以 **Release 资产** 的形式发布：
-
-**→ [Releases · v1.0-weights](https://github.com/reyuri/pickplace-so101/releases/tag/v1.0-weights)**
-
-| 文件 | 对应模型 | 大小 | sha256 |
-|---|---|---|---|
-| `smolvla_A1_s5000.tar.gz` | SmolVLA **A1**（侧视原图）step 5000 | 720 MB | `180c696b7e85d671d9e6e55f64c5aa883a70080791c75feb8aea0bb1a8a0ed03` |
-| `smolvla_A2_s5000.tar.gz` | SmolVLA **A2**（YOLO 红框）step 5000 | 720 MB | `d1a1aecf846b3756571dd5f355decd5c39de496f3a48939594d90443b6cb5320` |
-| `smolvla_A3_s5000.tar.gz` | SmolVLA **A3**（红框 + 框感知指令）step 5000 | 720 MB | `a9a5485f1939a4ba8922db0d0318a70fdc1b4fc68e4ced10b9611c79fed9dc1c` |
-| `octo_base_12000.tar.gz` | Octo **base**（LoRA Q/V）step 12000 | 553 MB | `b1ad9b2e9e44c650b7332c99c7f43e44bdb0ac0bf0d63efa314181307f580cae` |
-
----
-
 ## SmolVLA 消融 A1 A2 A3
 
 三个变体的**训练超参完全相同**，只改输入表征：
@@ -308,7 +292,7 @@ Octo 微调完在真机上会**忽略语言指令，只按画面的视觉显著�
 
 ### 结果
 
-![Octo base 与 infoNCE 的语言穿透率对比](assets/octo_infonce_result.png)
+![Octo base 与 infoNCE 的语言穿透率对比]
 
 | checkpoint | readout ΔL | readout S | 动作 ΔL | 动作 S | **S_readout / S_action** |
 |---|---|---|---|---|---|
@@ -323,14 +307,11 @@ Octo 微调完在真机上会**忽略语言指令，只按画面的视觉显著�
   也就是**约 6/7 的相对语言结构没能穿过动作头**
 - 到 /8000 涨到 **11.2**，穿透率进一步恶化
 
-### 根源
+### 可能根源
 
 > Octo 将图像、语言特征 **→ 融合压缩成 一个固定长度向量 `readout_emb`**，容量有限；
 > 图像空间信息（物体位置、靠近哪边玩具）的信号强度往往**远大于**语言语义信号
 > → 动作头（语言很容易丢）。
-
-也就是说，对比损失把语言「塞进」了 readout，却没有解决动作头读取时**图像信号压过语言信号**这件事 ——
-语言在 readout 里的话语权涨了近两个数量级，真正穿透到动作上的**反而更少**。
 
 **这一路改动没有产出比 baseline 更好的 checkpoint**，它作为一次**被证伪的假设**留在这里：
 语言条件失效不是「readout 没编码语言」，而是「编码了也压不过图像」。
