@@ -14,7 +14,7 @@
 - [数据集](#数据集)
 - [系统架构](#系统架构)
 - [复现步骤](#复现步骤)
-- [SmolVLA 消融 A1 A2 A3](#smolvla-消融-a1-a2-a3)
+- [SmolVLA 微调和消融](#smolvla-微调和消融)
 - [π0.5 LoRA 微调](#π05-lora-微调)
 - [Octo LoRA 微调](#octo-lora-微调)
 - [Octo 消融：Base vs infoNCE](#octo-消融base-vs-infonce)
@@ -187,7 +187,31 @@ python deploy/drive_so101_dual.py --model A1 --toy tree --move --max-cycles 20 -
 
 ---
 
-## SmolVLA 消融 A1 A2 A3
+## SmolVLA 微调和消融
+
+SmolVLA-450M（`lerobot/smolvla_base` = SmolVLM2-500M-Video-Instruct + 动作专家）用同一批数据微调。
+
+与 π0.5 / Octo 的 LoRA 路线不同，这里**不做低秩适配**：VLM 整个冻结，
+直接训练下游的动作专家，由它自己决定怎么用 VLM 已有的视觉表征。
+
+### 训练配置
+
+`train/smolvla/train_A1.sh`（A2 / A3 逐字同参，只换数据集与输出目录）：
+
+| 项 | 值 |
+|---|---|
+| 基座 | `lerobot/smolvla_base`，共 **450 M** |
+| 微调方式 | **动作专家全量训练**（无 LoRA）；可训练 **99.9 M / 450.0 M ≈ 22%** |
+| 冻结部分 | **整个 VLM** —— `train_expert_only=true` + `freeze_vision_encoder=true`，视觉编码器与语言塔都不动 |
+| VLM 层数 / 专家宽度 | 只取前 **16** 层（`num_vlm_layers=16`）；专家隐层宽度 = VLM 的 **0.75** 倍 |
+| 注意力 | `cross_attn` |
+| 输入分辨率 | **512×512**（`resize_imgs_with_padding`） |
+| 图像输入 | `side` + `eye_in_hand` 两路（SmolVLA 视觉塔固定 3 槽，空槽用 dummy 填充） |
+| 语言 | 按最大长度 padding，tokenizer 上限 48 |
+| 动作块 | `chunk_size = 50`，`n_action_steps = 50`；流匹配推理步数 10 |
+| batch / lr / steps | **12** / 1e-4（warmup 1000 → decay 30000 到 2.5e-6）/ **10000** |
+
+### 消融设计：A1 / A2 / A3
 
 三个变体的**训练超参完全相同**，只改输入表征：
 
@@ -460,7 +484,7 @@ A1 却抓成了正前方的 tree。**A1 过拟合了示教轨迹**，
 
 | 模型 | 参数量 | 微调方式 | 输入分辨率 | 云端前向 | 网络往返 | **单轮规划** | 每轮执行 | 约需轮数 | 整体 |
 |---|---|---|---|---|---|---|---|---|---|
-| **SmolVLA-450M** | 450 M | 微调 | 512×512 | ≈ 300 ms<br>（A2/A3 另加 YOLO ≈ 40 ms） | ≈ 140 ms | **≈ 480 ms** | 15 步 | 13 ~ 15 | ≈ 6 ~ 7 s |
+| **SmolVLA-450M** | 450 M | 微调<br>（仅动作专家） | 512×512 | ≈ 300 ms<br>（A2/A3 另加 YOLO ≈ 40 ms） | ≈ 140 ms | **≈ 480 ms** | 15 步 | 13 ~ 15 | ≈ 6 ~ 7 s |
 | **Octo Base** | 93 M | LoRA rank 8<br>（仅 attention Q/V） | 256×256（primary）<br>128×128（wrist） | ≈ 130 ms | ≈ 50 ms | **≈ 180 ms** | 4 步 | 55 ~ 60 | ≈ 10 ~ 11 s |
 | **π0.5** | 3.6 B | LoRA rank 16 | 224×224 | ≈ 450 ms | ≈ 100 ms | **≈ 550 ms** | 20 步 | 14 ~ 16 | ≈ 8~9 s |
 
@@ -534,7 +558,7 @@ pickplace-so101/
 
 | 其他组件 | 说明 |
 |---|---|
-| SmolVLA 基座 | `lerobot/smolvla_base`（450M）；A1/A2/A3 为**微调**，非 LoRA |
+| SmolVLA 基座 | `lerobot/smolvla_base`（450M）；A1/A2/A3 为**微调**（仅训动作专家，VLM 冻结） |
 | Octo 基座 | 官方 **Octo Base**（93M）+ 自定义 LoRA fork（Q/V 适配器 + 可加载的 base kernel 路径） |
 | π0.5 基座 | 官方 **π0.5 / pi0.5** 权重（PaliGemma-2B + action expert，3.6 B）；LoRA r16 微调 |
 | YOLO | ultralytics YOLO11n |
