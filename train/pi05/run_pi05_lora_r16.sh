@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# pi0.5 LoRA 微调（r16 / alpha32）—— 本项目采用的 pi0.5 基线，对应 checkpoint step 018000。
+# pi0.5 LoRA 微调（r16 / alpha32）—— **上一版**，只挂注意力 q/v + 动作投影，
+# 对应 checkpoint step 018000。当前采用的是 run_pi05_lora_r16_mlp.sh（多挂动作专家 MLP），
+# 本脚本保留作为对照。
 #
 #   bash run_pi05_lora_r16.sh
 #   WORK=/data/toy STEPS=20000 bash run_pi05_lora_r16.sh

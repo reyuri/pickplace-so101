@@ -67,6 +67,7 @@ aggregate_datasets(
     aggr_root=OUT,
 )
 ```
+
 ---
 
 ## 系统架构
@@ -141,9 +142,10 @@ python smolvla_train_launcher.py \
 #### π0.5
 
 ```bash
-# 在服务器上（双卡 DDP，每卡 bs=4，effective batch = 8）
-bash train/pi05/run_pi05_lora_r16.sh
+# 在服务器上（单卡 bs=8，effective batch = 8）
+bash train/pi05/run_pi05_lora_r16_mlp.sh
 
+# 实例有两块卡时可改回双卡 DDP（每卡 bs=4），effective batch 仍为 8
 ```
 
 #### Octo
@@ -189,10 +191,9 @@ python deploy/drive_so101_dual.py --model A1 --toy tree --move --max-cycles 20 -
 
 ## SmolVLA 微调和消融
 
-SmolVLA-450M（`lerobot/smolvla_base` = SmolVLM2-500M-Video-Instruct + 动作专家）用同一批数据微调。
+SmolVLA-450M用同一批数据微调。
 
-与 π0.5 / Octo 的 LoRA 路线不同，这里**不做低秩适配**：VLM 整个冻结，
-直接训练下游的动作专家，由它自己决定怎么用 VLM 已有的视觉表征。
+VLM 整个冻结，直接训练下游的动作专家，由它自己决定怎么用 VLM 已有的视觉表征。
 
 ### 训练配置
 
@@ -202,9 +203,7 @@ SmolVLA-450M（`lerobot/smolvla_base` = SmolVLM2-500M-Video-Instruct + 动作专
 |---|---|
 | 基座 | `lerobot/smolvla_base`，共 **450 M** |
 | 微调方式 | **动作专家全量训练**（无 LoRA）；可训练 **99.9 M / 450.0 M ≈ 22%** |
-| 冻结部分 | **整个 VLM** —— `train_expert_only=true` + `freeze_vision_encoder=true`，视觉编码器与语言塔都不动 |
-| VLM 层数 / 专家宽度 | 只取前 **16** 层（`num_vlm_layers=16`）；专家隐层宽度 = VLM 的 **0.75** 倍 |
-| 注意力 | `cross_attn` |
+| 冻结部分 | **整个 VLM**, 视觉编码器与语言塔都不动 |
 | 输入分辨率 | **512×512**（`resize_imgs_with_padding`） |
 | 图像输入 | `side` + `eye_in_hand` 两路（SmolVLA 视觉塔固定 3 槽，空槽用 dummy 填充） |
 | 语言 | 按最大长度 padding，tokenizer 上限 48 |
@@ -246,17 +245,22 @@ SmolVLA-450M（`lerobot/smolvla_base` = SmolVLM2-500M-Video-Instruct + 动作专
 
 ## π0.5 LoRA 微调
 
-π0.5（SigLIP 0.4 B + VLM 2.6 B + 动作专家 0.3 B ≈ **3.3 B**）用同一批数据微调。冻结视觉塔，只在注意力与动作投影上加 LoRA。
+π0.5（SigLIP 0.4 B + VLM 2.6 B + 动作专家 0.3 B ≈ **3.3 B**）用同一批数据微调。
+冻结视觉塔，LoRA 挂在注意力**和动作专家的 MLP**上。
 
-`train/pi05/run_pi05_lora_r16.sh`：
+`train/pi05/run_pi05_lora_r16_mlp.sh`：
 
 | 项 | 值 |
 |---|---|
 | 微调方式 | LoRA rank **16** / alpha 32 / dropout 0.05 |
-| 可训练参数 | **3.13 M / 3.3 B ≈ 0.095 %**（适配器 148 个张量，全部 F32） |
-| LoRA 挂载 | **74 个模块**：`gemma_expert`（动作专家）attention q/v **36** 个 → **1.25 M（40 %）**；`paligemma.language_model`（VLM）attention q/v **36** 个 → **1.84 M（59 %）**；`action_in_proj` / `action_out_proj` → 0.03 M（1 %）<br>⚠️ 配置 regex 里列了 `state_proj` / `action_time_mlp_*`，但**实际未被挂载**（适配器里没有对应张量，别照 regex 报） |
+| 可训练参数 | **7.55 M / 3.3 B ≈ 0.23 %**（适配器 256 个张量，全部 F32） |
+| LoRA 挂载 | **128 个模块**，四组： |
+| ├ 动作专家 MLP | `gemma_expert` 的 `gate_proj` / `up_proj` / `down_proj` **54** 个 → **4.42 M（58.6 %）** |
+| ├ VLM 注意力 | `paligemma.language_model` 的 q/v **36** 个 → 1.84 M（24.4 %） |
+| ├ 动作专家注意力 | `gemma_expert` 的 q/v **36** 个 → 1.25 M（16.6 %） |
+| └ 动作投影 | `action_in_proj` / `action_out_proj` 2 个 → 0.03 M（0.4 %） |
 | 冻结部分 | 视觉编码器（`freeze_vision_encoder=true`） |
-| 输入分辨率 | **224×224**（保长宽比居中 padding，480×640 → 内容 224×168，无几何畸变） |
+| 输入分辨率 | **224×224** |
 | 图像输入 | `side` + `eye_in_hand` 两路 |
 | 动作块 | `chunk_size = 50`，扩散/流匹配推理步数 10 |
 | batch / lr / steps | effective **8** / 1.5e-5 / 20000 |
@@ -293,7 +297,7 @@ python data/lerobot_to_octo_frames.py --root ... --toy ... --out ... --verify-on
 
 | 项 | 值 |
 |---|---|
-| 解冻部分 | ① **transformer MLP 全量 56.67 M**<br>② DiffusionActionHead 全量 1.80 M（保留 OpenX 预训练的 dim7/horizon4 头）<br>③ 语言投影 0.60 M<br>⇒ **可训练合计 59.4 M / 202.8 M ≈ 29 %**（对 93 M 骨干 ≈ **64 %**） |
+| 解冻部分 | ① **transformer MLP 全量 56.67 M**<br>② DiffusionActionHead 全量 1.80 M<br>③ 语言投影 0.60 M<br>⇒ **可训练合计 59.4 M / 202.8 M ≈ 29 %**（对 93 M 骨干 ≈ **64 %**） |
 | 冻结部分 | ViT、T5 语言塔（**109.6 M**）、attention base kernel（28.3 M）、LayerNorm |
 | window / horizon | 2 / 4 |
 | 图像尺寸 | primary 256×256，wrist 128×128 |
@@ -378,7 +382,7 @@ epoch 按 `step × effective_batch ÷ 训练帧数` 折算，训练帧数 ≈ 31
 |---|---|---|
 | SmolVLA A1 / A2 / A3 | step 5000 | ≈ 2 |
 | Octo | step 12000 | ≈ 3 |
-| π0.5 | step 018000 | ≈ 4.5 |
+| π0.5 | step **020000** | ≈ 5 |
 
 ### SmolVLA A1 / A2 / A3 成功率
 
@@ -447,9 +451,6 @@ A1 却抓成了正前方的 tree。**A1 过拟合了示教轨迹**，
 相比于 SmolVLA 与 Octo，π0.5 的**抓取动作明显更平滑流畅**：轨迹连续、几乎看不到中途停顿或来回修正，
 夹爪开合时机也更干净。
 
-这是现场录像的直观对比，不是量化指标 —— 三个模型的 `--exec-steps` 并不相同（π0.5 是 20，SmolVLA 是 15，Octo 是 4），
-每轮重规划的频率也就不一样，因此**这不构成对骨干架构的公平比较**，只说明 π0.5 在本任务上可用且动作质量最好。
-
 #### 4) π0.5：同样存在忽略语言的问题
 
 但 π0.5 和 Octo 犯的是**同一个病**。下图中指令要求抓**左侧的 tree**，
@@ -486,10 +487,7 @@ A1 却抓成了正前方的 tree。**A1 过拟合了示教轨迹**，
 |---|---|---|---|---|---|---|---|---|---|
 | **SmolVLA-450M** | 450 M | 微调<br>（仅动作专家） | 512×512 | ≈ 300 ms<br>（A2/A3 另加 YOLO ≈ 40 ms） | ≈ 140 ms | **≈ 480 ms** | 15 步 | 13 ~ 15 | ≈ 6 ~ 7 s |
 | **Octo Base** | 93 M | **LoRA r8（Q/V）0.29 M**<br>+ transformer MLP 56.7 M<br>+ ActionHead 1.8 M<br>+ 语言投影 0.6 M<br>⇒ **可训练 59.4 M**<br>（/202.8 M ≈ **29 %**） | 256×256（primary）<br>128×128（wrist） | ≈ 130 ms | ≈ 50 ms | **≈ 180 ms** | 4 步 | 55 ~ 60 | ≈ 10 ~ 11 s |
-| **π0.5** | 3.3 B | LoRA rank 16 | 224×224 | ≈ 450 ms | ≈ 100 ms | **≈ 550 ms** | 20 步 | 14 ~ 16 | ≈ 8~9 s |
-
-- 三个模型的输入分辨率**依次递减**（512 → 256 → 224），但单轮耗时并不同向变化：
-  π0.5 骨干比 SmolVLA-450M 大一个数量级（3.3 B vs 450 M），分辨率更低却更慢。
+| **π0.5** | 3.3 B | LoRA r16<br>+ 动作专家 MLP | 224×224 | ≈ 420 ms | ≈ 100 ms | **≈ 520 ms** | 20 步 | 10 ~ 12 | ≈ 5~6 s |
 
 ---
 
@@ -514,7 +512,9 @@ pickplace-so101/
 │   │   ├── run_finetune.sh / run_infonce.sh
 │   │   └── probes/                    语言敏感度探针与对比实验
 │   └── pi05/
-│       ├── run_pi05_lora_r16.sh        LoRA(r16) 微调
+│       ├── run_pi05_lora_r16_mlp.sh    LoRA(r16) + 动作专家 MLP 微调（当前采用）
+│       ├── run_pi05_lora_r16.sh        LoRA(r16) 仅注意力 q/v（上一版）
+│       ├── check_target_modules.py     开跑前闸门：核对 target_modules 实际挂载的模块与参数量
 │       └── probes/
 │           ├── lang_probe.py              语言敏感度（含噪声地板）
 │           ├── commit_test.py             「模型会不会选目标」定向探针
@@ -560,7 +560,7 @@ pickplace-so101/
 |---|---|
 | SmolVLA 基座 | `lerobot/smolvla_base`（450M）；A1/A2/A3 为**微调**（仅训动作专家，VLM 冻结） |
 | Octo 基座 | 官方 **Octo Base**（93 M）+ 自定义 LoRA fork（Q/V 适配器 + 可加载的 base kernel 路径） |
-| π0.5 基座 | 官方 **π0.5 / pi0.5** 权重（SigLIP 0.4 B + VLM 2.6 B + 动作专家 0.3 B ≈ **3.3 B**）；LoRA r16 微调 |
+| π0.5 基座 | 官方 **π0.5 / pi0.5** 权重（SigLIP 0.4 B + VLM 2.6 B + 动作专家 0.3 B ≈ **3.3 B**）；LoRA r16 微调（注意力 q/v + 动作专家 MLP） |
 | YOLO | ultralytics YOLO11n |
 | 推理硬件 | AutoDL RTX 4090（同时常驻 3 个 SmolVLA + 1 个 Octo + 1 个 π0.5 + 1 个 YOLO） |
 
