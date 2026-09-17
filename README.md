@@ -18,8 +18,7 @@
 - [π0.5 LoRA 微调](#π05-lora-微调)
 - [Octo 微调与消融](#octo-微调与消融)
 - [真机测试结果](#真机测试结果)
-- [仓库结构](#仓库结构)
-- [环境](#环境)
+- [未来改进：微调 OpenVLA](#未来改进微调-openvla)
 
 ---
 
@@ -484,80 +483,14 @@ A1 却抓成了正前方的 tree。**A1 过拟合了示教轨迹**，
 
 ---
 
-## 仓库结构
+## 未来改进：微调 OpenVLA
 
-```
-pickplace-so101/
-├── data/                          数据：格式转换与数据集构建
-│   ├── lerobot_to_octo_frames.py     LeRobot → Octo npz（不依赖 torchcodec）
-│   ├── lerobot_toy_dataset.py        Octo TFDS builder
-│   ├── build_tfds.py                 打包 TFDS
-│   ├── bake_redbox_dataset.py        离线烘焙 YOLO 红框进训练数据
-│   └── make_a3_dataset.py            生成 A3 的框感知指令数据集
-│
-├── train/
-│   ├── smolvla/                   SmolVLA 微调
-│   │   ├── smolvla_train_launcher.py  自动探测相机数，生成 input_features
-│   │   ├── train_A1.sh / A2.sh / A3.sh
-│   │   └── tb_sidecar.py              TensorBoard 日志旁路
-│   ├── octo/
-│   │   ├── finetune_octo_lora_qv.py   LoRA(Q/V) 微调
-│   │   ├── run_finetune.sh / run_infonce.sh
-│   │   └── probes/                    语言敏感度探针与对比实验
-│   └── pi05/
-│       ├── run_pi05_lora_r16_mlp.sh    LoRA(r16) + 动作专家 MLP 微调（当前采用）
-│       ├── run_pi05_lora_r16.sh        LoRA(r16) 仅注意力 q/v（上一版）
-│       ├── check_target_modules.py     开跑前闸门：核对 target_modules 实际挂载的模块与参数量
-│       └── probes/
-│           ├── lang_probe.py              语言敏感度（含噪声地板）
-│           ├── commit_test.py             「模型会不会选目标」定向探针
-│           └── res_sweep.py               输入分辨率剂量-响应扫描
-│
-├── deploy/                        推理服务与真机驱动
-│   ├── serve_smolvla_dual.py         双相机 SmolVLA 推理服务
-│   ├── serve_pi05.py                 π0.5 推理服务（:6030）
-│   ├── start_pi05_serve.sh           起 π0.5 服务
-│   ├── serve_octo_native.py          Octo 推理服务（原生，无红框）
-│   ├── serve_octo_redbox.py          Octo 红框版推理服务（服务端注入 YOLO 红框）
-│   ├── start_octo_redbox.sh          起 Octo 红框版链路（YOLO:6090 + serve:6020）
-│   ├── smoke_octo_redbox.py          Octo 红框版链路自检（含框画图目视确认）
-│   ├── serve_dual.sh                 一键起 YOLO + A1/A2/A3
-│   ├── tunnel_dual.sh                本地 SSH 隧道管理
-│   ├── drive_so101_dual.py           ★ 真机闭环驱动（含多项安全护栏）
-│   ├── record_so101.py               遥操作数据采集
-│   └── dual_camera_viewer.py         开机前相机索引确认
-│
-├── yolo/                          YOLO11n 目标检测
-│   ├── yolo_train.py                 训练（5 类：elephant/tree/ball/box/arm）
-│   ├── yolo_serve.py                 推理服务，供 A2/A3 调用
-│   ├── gen_yolo_targetbox_sidecar.py 生成目标框 sidecar
-│   ├── prepare_yolo_ann.py           抽帧供标注
-│   └── resample_annot_diverse.py     最远点采样选标注帧（200 train / 20 val）
-│
-├── assets/                       图片与演示视频
-└── README.md
-```
+本轮把瓶颈定位在「**指令里的名词 ↔ 图像里的目标区域**」这条绑定上。
+下一版计划把基座换成 **OpenVLA**（7 B，LLaVA 风格的多模态基座）—— 它的多模态对齐与 grounding 能力更强，因为：
 
----
+**① OpenVLA 的两个 ViT 特征天然互补：DINOv2（管在哪）+ SigLIP（管是什么）—— 空间几何定位 + 语义对齐。**
 
-## 环境
-
-**本地与服务器的 lerobot 不是同一个版本**，两个补丁也打在不同的 checkout 上：
-
-| 侧 | lerobot | 用途 | 打的补丁 |
-|---|---|---|---|
-| 本地（Windows） | **0.4.4**（源码 checkout，editable 安装） | 数据采集、真机闭环驱动 | `cameras/utils.py`：`CAP_MSMF` → `CAP_DSHOW`（Windows 相机后端） |
-| 云端（AutoDL） | **0.6.2**（conda env `smolvla`） | 训练、推理服务 | `datasets/factory.py`：eval 切分改为均匀抽样（`train/smolvla/patch_factory_eval.py`） |
-
-| 其他组件 | 说明 |
-|---|---|
-| SmolVLA 基座 | `lerobot/smolvla_base`（450M）；A1/A2/A3 为**微调**（仅训动作专家，VLM 冻结） |
-| Octo 基座 | 官方 **Octo Base**（93 M）+ 自定义 LoRA fork（Q/V 适配器 + 可加载的 base kernel 路径） |
-| π0.5 基座 | 官方 **π0.5 / pi0.5** 权重（SigLIP 0.4 B + VLM 2.6 B + 动作专家 0.3 B ≈ **3.3 B**）；LoRA r16 微调（注意力 q/v + 动作专家 MLP） |
-| YOLO | ultralytics YOLO11n |
-| 推理硬件 | AutoDL RTX 4090（同时常驻 3 个 SmolVLA + 1 个 Octo + 1 个 π0.5 + 1 个 YOLO） |
-
-数据转换侧最低依赖：`pyarrow`、`av`、`numpy`（**不需要 torchcodec**）。
+**② 预训练目标里天然就包含语言–视觉区域绑定** —— LLaVA 风格多模态预训练数据（描述 / 区域级问答 / 指代定位）+ Open X-Embodiment ≈ 97 万条真机 episode。
 
 ---
 
